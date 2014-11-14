@@ -89,6 +89,8 @@ typedef struct data_packet_s
     in_addr_t   slave_ip;           /**< Address of receiver */
     uint32_t    slave_seconds;      /**< Time seen by receiver */
     uint32_t    slave_nanoseconds;
+    uint32_t    recv_seconds;      /**< Time seen at the arrival */
+    uint32_t    recv_nanoseconds;
 } data_packet_t;
 
 typedef struct client_s
@@ -762,6 +764,7 @@ static uint32_t read_uint32 (uint8_t *buf, unsigned offset)
 static int read_packet (data_packet_t *packet, uint8_t *buf, unsigned length)
 {
     int rc = -1;
+    struct timespec now;
 
     if (length == PACKET_LENGTH)
     {
@@ -775,6 +778,9 @@ static int read_packet (data_packet_t *packet, uint8_t *buf, unsigned length)
         packet->slave_ip = read_uint32 (buf, PACKET_SLAVE_IP_OFFSET);
         packet->slave_seconds = read_uint32 (buf, PACKET_SLAVE_SECONDS_OFFSET);
         packet->slave_nanoseconds = read_uint32 (buf, PACKET_SLAVE_NANOSECONDS_OFFSET);
+        clock_gettime (CLOCK_REALTIME, &now)
+        packet->recv_seconds = now.tv_sec;
+        packet->recv_nanoseconds = now.tv_nsec;
 
         rc = 0;
     }
@@ -790,13 +796,18 @@ static int process_packet (data_packet_t *packet, bool short_form)
     assert (NULL != packet);
     struct timespec     control;
     struct timespec     slave;
+    struct timespec     recvt;
     struct timespec     diff;
+    struct timespec     difftot;
     char   scratch      [80];
+    char   rscratch     [80];
 
     control.tv_sec = (time_t) packet->seconds;
     control.tv_nsec = packet->nanoseconds;
     slave.tv_sec = (time_t) packet->slave_seconds;
     slave.tv_nsec = packet->slave_nanoseconds;
+    recvt.tv_sec = (time_t) packet->recv_seconds;
+    recvt.tv_nsec = packet->recv_nanoseconds;
     /* Allow for wrap */
     if (slave.tv_nsec > control.tv_nsec)
     {
@@ -808,6 +819,16 @@ static int process_packet (data_packet_t *packet, bool short_form)
         diff.tv_nsec = control.tv_nsec - slave.tv_nsec;
         diff.tv_sec = control.tv_sec - slave.tv_sec;
     }
+    if (recvt.tv_nsec > control.tv_nsec)
+    {
+        difftot.tv_nsec = NSEC_IN_SEC + control.tv_nsec - recvt.tv_nsec;
+        difftot.tv_sec = control.tv_sec - recvt.tv_sec - 1;
+    }
+    else
+    {
+        difftot.tv_nsec = control.tv_nsec - recvt.tv_nsec;
+        difftot.tv_sec = control.tv_sec - recvt.tv_sec;
+    }
 
     if (short_form)
     {
@@ -816,13 +837,15 @@ static int process_packet (data_packet_t *packet, bool short_form)
     }
     else
     {
-        printf ("%s %4d C %ld.%09ld S %ld.%09ld delta ",
+        printf ("%s %4d C %ld.%09ld S %ld.%09ld R %ld.%09ld delta ",
             ipaddr_str (packet->slave_ip),
             packet->sequence,
             packet->seconds,
             packet->nanoseconds,
             packet->slave_seconds,
-            packet->slave_nanoseconds);
+            packet->slave_nanoseconds,
+            packet->recv_seconds,
+            packet->recv_nanoseconds);
     }
 
     if (diff.tv_sec >= 0)
@@ -834,6 +857,15 @@ static int process_packet (data_packet_t *packet, bool short_form)
         sprintf (scratch, "-%d.%09ld", ~diff.tv_sec, NSEC_IN_SEC - diff.tv_nsec);
     }
     printf ("%16s", scratch);
+    if (difftot.tv_sec >= 0)
+    {
+        sprintf (rscratch, " %d.%09ld", difftot.tv_sec, difftot.tv_nsec);
+    }
+    else
+    {
+        sprintf (rscratch, "-%d.%09ld", ~difftot.tv_sec, NSEC_IN_SEC - difftot.tv_nsec);
+    }
+    printf ("%16s", rscratch);
 
     if (!short_form)
     {
